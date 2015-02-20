@@ -29,6 +29,26 @@ describe JWT do
     expect(decoded_payload).to include(@payload)
   end
 
+  it 'fails signiture verification using an incorrect x5c certificate' do
+    private_key = OpenSSL::PKey::RSA.generate(512)
+    private_key2 = OpenSSL::PKey::RSA.generate(512)
+    jwt = JWT.encode(@payload, private_key, "RS256", {"x5c" => [private_key2.public_key]})
+    expect do
+      JWT.decode(jwt) do |headers|
+        OpenSSL::PKey::RSA.new headers["x5c"][0]
+      end
+    end.to raise_error(JWT::DecodeError)
+  end
+
+  it 'passes signiture verification using a correct x5c certificate' do
+    private_key = OpenSSL::PKey::RSA.generate(512)
+    jwt = JWT.encode(@payload, private_key, "RS256", {"x5c" => [private_key.public_key]})
+    decoded = JWT.decode(jwt) do |headers|
+      OpenSSL::PKey::RSA.new headers["x5c"][0]
+    end
+    expect(decoded).to include(@payload)
+  end
+
   it "decodes valid JWTs" do
     example_payload = {"hello" => "world"}
     example_secret = 'secret'
