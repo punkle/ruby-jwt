@@ -262,4 +262,68 @@ PUBKEY
       expect(decoded_segments[1]).to eq(@payload)
     end
   end
+
+  describe 'using x5c header for signature' do
+    let :root_ca_private_key do
+      OpenSSL::PKey::RSA.new(2048)
+    end
+
+    let :root_ca do
+      root_ca = OpenSSL::X509::Certificate.new
+      root_ca.version = 2 # cf. RFC 5280 - to make it a "v3" certificate
+      root_ca.serial = 1
+      root_ca.subject = OpenSSL::X509::Name.parse "/DC=org/DC=ruby-lang/CN=Ruby CA"
+      root_ca.issuer = root_ca.subject # root CA's are "self-signed"
+      root_ca.public_key = root_ca_private_key.public_key
+      root_ca.not_before = Time.now
+      root_ca.not_after = root_ca.not_before + 2 * 365 * 24 * 60 * 60 # 2 years validity
+      ef = OpenSSL::X509::ExtensionFactory.new
+      ef.subject_certificate = root_ca
+      ef.issuer_certificate = root_ca
+      root_ca.add_extension(ef.create_extension("basicConstraints","CA:TRUE",true))
+      root_ca.add_extension(ef.create_extension("keyUsage","keyCertSign, cRLSign", true))
+      root_ca.add_extension(ef.create_extension("subjectKeyIdentifier","hash",false))
+      root_ca.add_extension(ef.create_extension("authorityKeyIdentifier","keyid:always",false))
+      root_ca.sign(root_ca_private_key, OpenSSL::Digest::SHA256.new)
+    end
+
+    let :cert_private_key do
+      OpenSSL::PKey::RSA.new 2048
+    end
+
+    let :cert do
+      cert = OpenSSL::X509::Certificate.new
+      cert.version = 2
+      cert.serial = 2
+      cert.subject = OpenSSL::X509::Name.parse "/DC=org/DC=ruby-lang/CN=Ruby certificate"
+      cert.issuer = root_ca.subject # root CA is the issuer
+      cert.public_key = cert_private_key.public_key
+      cert.not_before = Time.now
+      cert.not_after = cert.not_before + 1 * 365 * 24 * 60 * 60 # 1 years validity
+      ef = OpenSSL::X509::ExtensionFactory.new
+      ef.subject_certificate = cert
+      ef.issuer_certificate = root_ca
+      cert.add_extension(ef.create_extension("keyUsage","digitalSignature", true))
+      cert.add_extension(ef.create_extension("subjectKeyIdentifier","hash",false))
+      cert.sign(root_ca_private_key, OpenSSL::Digest::SHA256.new)
+    end
+
+    it 'fails signiture verification using an incorrect x5c certificate' do
+      wrong_private_key = OpenSSL::PKey::RSA.generate(512)
+      jwt = JWT.encode(@payload, wrong_private_key, "RS256", {"x5c" => [Base64.strict_encode64(cert.to_der)]})
+      expect do
+        JWT.decode(jwt) do |headers|
+          OpenSSL::X509::Certificate.new(Base64.decode64(headers["x5c"].first)).public_key
+        end
+      end.to raise_error(JWT::DecodeError)
+    end
+
+    it 'passes signiture verification using a correct x5c certificate' do
+      jwt = JWT.encode(@payload, cert_private_key, "RS256", {"x5c" => [Base64.strict_encode64(cert.to_der)]})
+      decoded = JWT.decode(jwt) do |headers|
+        OpenSSL::X509::Certificate.new(Base64.decode64(headers["x5c"].first)).public_key
+      end
+      expect(decoded).to include(@payload)
+    end
+  end
 end
